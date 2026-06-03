@@ -234,6 +234,21 @@ def fmt_num(x):
     return f"{x:,.0f}"
 
 
+def holding_rate(series):
+    s = pd.to_numeric(series, errors="coerce")
+    if len(s) == 0:
+        return 0.0
+    return float((s > 0).mean())
+
+
+def holder_median(series):
+    s = pd.to_numeric(series, errors="coerce")
+    s = s[s > 0]
+    if len(s) == 0:
+        return 0.0
+    return float(s.median())
+
+
 def insight_box(title, body):
     st.markdown(
         f"""
@@ -453,8 +468,8 @@ if selected_page == pages[0]:
             fig.update_layout(height=520)
             st.plotly_chart(fig, use_container_width=True)
             st.caption(
-                "※ ‘전체’·‘15~64세’·‘15~29세’·‘15~24세’처럼 다른 구간과 겹치는 합계 구간은 중복 집계라 제외하고, "
-                "서로 겹치지 않는 단일 연령대만 표시했습니다. 청년(15~19세·20~29세)을 다른 연령대와 비교해 보세요. 단위: 천 명."
+                "※ ‘전체’·‘15–64세’·‘15–29세’·‘15–24세’처럼 다른 구간과 겹치는 합계 구간은 중복 집계라 제외하고, "
+                "서로 겹치지 않는 단일 연령대만 표시했습니다. 청년(15–19세·20–29세)을 다른 연령대와 비교해 보세요. 단위: 천 명."
             )
         else:
             fig = px.line(
@@ -473,8 +488,14 @@ if selected_page == pages[0]:
     col1, col2, col3, col4 = st.columns(4)
     col1.metric("분석 대상 수", f"{len(filtered):,}명")
     col2.metric("평균 생활비", fmt_num(safe_mean(filtered[COL_COST])))
-    col3.metric("평균 부채", fmt_num(safe_mean(filtered[COL_DEBT])))
+    col3.metric("부채 보유율", f"{holding_rate(filtered[COL_DEBT]):.1%}")
     col4.metric("평균 위험점수", f"{safe_mean(filtered['위험점수']):.2f} / 5")
+
+    st.caption(
+        f"※ 부채는 응답자의 약 {1 - holding_rate(filtered[COL_DEBT]):.0%}가 0이라 평균이 소수 고액 부채자에 좌우됩니다. "
+        f"부채 보유자({holding_rate(filtered[COL_DEBT]):.1%})의 부채 중앙값은 {fmt_num(holder_median(filtered[COL_DEBT]))}만 원입니다. "
+        "(평균 부채 표기 대신 보유율·보유자 중앙값으로 표시)"
+    )
 
     insight_box(
         "해석",
@@ -823,8 +844,9 @@ elif selected_page == pages[4]:
     risk_table = filtered.groupby("위험수준", observed=True).agg(
         인원수=("위험점수", "count"),
         평균생활비=(COL_COST, "mean"),
-        평균부채=(COL_DEBT, "mean"),
-        평균이자=(COL_INTEREST, "mean"),
+        부채보유율=(COL_DEBT, holding_rate),
+        부채중앙값_보유자=(COL_DEBT, holder_median),
+        이자보유율=(COL_INTEREST, holding_rate),
         가족지원비율=(COL_FAMILY, "mean"),
         공공지원비율=(COL_PUBLIC, "mean"),
         도움없음비율=(COL_NONE, "mean")
@@ -832,6 +854,10 @@ elif selected_page == pages[4]:
 
     st.subheader("위험수준별 생활안전망 특성")
     st.dataframe(risk_table, use_container_width=True)
+    st.caption(
+        "※ 부채·이자는 0인 응답자가 대부분이라 평균 대신 '보유율'과 '보유자 한정 중앙값(만원)'으로 표시했습니다. "
+        "비율 컬럼은 0–1(=0–100%) 값입니다."
+    )
 
     insight_box(
         "핵심 인사이트",
@@ -895,15 +921,19 @@ elif selected_page == pages[5]:
         인원수=("생활안전망유형", "count"),
         평균생활비=(COL_COST, "mean"),
         평균연간소득=(COL_TOTAL_INCOME, "mean"),
-        평균사적이전소득=(COL_PRIVATE_INCOME, "mean"),
-        평균공적이전소득=(COL_PUBLIC_INCOME, "mean"),
-        평균부채=(COL_DEBT, "mean"),
-        평균이자=(COL_INTEREST, "mean"),
+        사적이전_보유율=(COL_PRIVATE_INCOME, holding_rate),
+        공적이전_보유율=(COL_PUBLIC_INCOME, holding_rate),
+        부채_보유율=(COL_DEBT, holding_rate),
+        이자_보유율=(COL_INTEREST, holding_rate),
         평균위험점수=("위험점수", "mean")
     ).reset_index()
 
     st.subheader("유형별 프로파일")
     st.dataframe(type_profile, use_container_width=True)
+    st.caption(
+        "※ 사적·공적 이전소득, 부채, 이자는 0인 응답자가 대부분이라 평균이 왜곡되기 쉬워 '보유율(0–1)'로 표시했습니다. "
+        "생활비·연간소득은 평균(만원)입니다."
+    )
 
     insight_box(
         "핵심 인사이트",
