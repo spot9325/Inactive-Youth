@@ -422,17 +422,39 @@ if selected_page == pages[0]:
             value_name="인구"
         )
 
-        trend_long["인구"] = pd.to_numeric(trend_long["인구"], errors="coerce").fillna(0)
+        trend_long["인구"] = pd.to_numeric(
+            trend_long["인구"].astype(str).str.replace(",", "", regex=False),
+            errors="coerce"
+        )
         category_col = id_cols[0] if len(id_cols) > 0 else None
 
         if category_col:
+            age_bands = ["15 - 19세", "20 - 29세", "30 - 39세", "40 - 49세", "50 - 59세", "60세이상"]
+            trend_long[category_col] = trend_long[category_col].astype(str).str.strip()
+            age_long = trend_long[trend_long[category_col].isin(age_bands)].copy()
+
+            if len(age_long) == 0:
+                st.warning("연령대 행을 찾지 못해 전체 추이를 표시합니다.")
+                age_long = trend_long
+            else:
+                age_long[category_col] = pd.Categorical(
+                    age_long[category_col], categories=age_bands, ordered=True
+                )
+                age_long = age_long.sort_values([category_col, "연도"])
+
             fig = px.line(
-                trend_long,
+                age_long,
                 x="연도",
                 y="인구",
                 color=category_col,
                 markers=True,
-                title="연도별 쉬었음·비경제활동인구 추이"
+                title="연도별 연령대별 쉬었음 인구 추이 (천 명)"
+            )
+            fig.update_layout(height=520)
+            st.plotly_chart(fig, use_container_width=True)
+            st.caption(
+                "※ ‘전체’·‘15~64세’·‘15~29세’·‘15~24세’처럼 다른 구간과 겹치는 합계 구간은 중복 집계라 제외하고, "
+                "서로 겹치지 않는 단일 연령대만 표시했습니다. 청년(15~19세·20~29세)을 다른 연령대와 비교해 보세요. 단위: 천 명."
             )
         else:
             fig = px.line(
@@ -442,8 +464,8 @@ if selected_page == pages[0]:
                 markers=True,
                 title="연도별 쉬었음 인구 추이"
             )
-        fig.update_layout(height=520)
-        st.plotly_chart(fig, use_container_width=True)
+            fig.update_layout(height=520)
+            st.plotly_chart(fig, use_container_width=True)
     else:
         st.warning("연도형 컬럼을 찾지 못했습니다. 원자료 일부를 표시합니다.")
         st.dataframe(df_trend.head(20), use_container_width=True)
