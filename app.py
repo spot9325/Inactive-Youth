@@ -399,9 +399,6 @@ filtered = df_survey.copy()
 if analysis_type != "전체":
     filtered = filtered[filtered["생활안전망유형"] == analysis_type]
 
-if risk_level != "전체":
-    filtered = filtered[filtered["위험수준"].astype(str) == risk_level]
-
 if parent_filter != "전체":
     filtered = filtered[filtered["부모동거"] == parent_filter]
 
@@ -422,6 +419,13 @@ if isolation_filter != "전체":
 
 if cost_filter != "전체":
     filtered = filtered[filtered["생활비구간"].astype(str) == cost_filter]
+
+# 위험수준 필터는 위험점수로 직접 정의되므로, 위험점수 기반 지표(위험군 비율 게이지)에서는
+# 순환참조를 피하기 위해 적용 직전의 집단을 따로 보관한다.
+filtered_excl_risk = filtered
+
+if risk_level != "전체":
+    filtered = filtered[filtered["위험수준"].astype(str) == risk_level]
 
 if len(filtered) == 0:
     st.warning("현재 필터 조건에 해당하는 데이터가 없습니다. 필터를 완화해주세요.")
@@ -880,24 +884,52 @@ elif selected_page == pages[3]:
 elif selected_page == pages[4]:
     st.header("5. 누가 가장 위험한 쉬었음 청년인가?")
 
-    avg_risk = safe_mean(filtered["위험점수"])
+    # 위험군 비율은 위험점수로 정의되므로, 같은 변수를 거르는 '위험수준' 필터는 제외하고 계산한다
+    # (위험수준 필터를 적용하면 저위험=0% / 중·고위험=100%로 고정돼 의미가 사라짐).
+    gauge_base = filtered_excl_risk
+    risk_share = round((gauge_base["위험점수"] >= 2).mean() * 100, 1)
+    overall_share = round((df_survey["위험점수"] >= 2).mean() * 100, 1)
 
     fig = go.Figure(go.Indicator(
-        mode="gauge+number",
-        value=avg_risk,
-        title={"text": "평균 생활안전망 위험점수"},
+        mode="gauge+number+delta",
+        value=risk_share,
+        number={"suffix": "%", "valueformat": ".1f"},
+        delta={
+            "reference": overall_share,
+            "valueformat": ".1f",
+            "suffix": "%p",
+            "increasing": {"color": "#e03131"},
+            "decreasing": {"color": "#2f9e44"}
+        },
+        title={"text": "위험군 비율 (위험요인 2개 이상 중첩)<br><span style='font-size:0.8em;color:gray'>(검은 선 = 전체 비율, ▲/▼ = 전체 대비 %p)</span>"},
         gauge={
-            "axis": {"range": [0, 5]},
+            "axis": {"range": [0, 100], "ticksuffix": "%"},
             "steps": [
-                {"range": [0, 1.5], "color": "#d8f3dc"},
-                {"range": [1.5, 3], "color": "#fff3b0"},
-                {"range": [3, 5], "color": "#ffccd5"}
+                {"range": [0, 15], "color": "#d8f3dc"},
+                {"range": [15, 30], "color": "#fff3b0"},
+                {"range": [30, 100], "color": "#ffccd5"}
             ],
-            "bar": {"color": "#6c63ff"}
+            "bar": {"color": "#6c63ff"},
+            "threshold": {
+                "line": {"color": "#343a40", "width": 3},
+                "thickness": 0.85,
+                "value": overall_share
+            }
         }
     ))
     fig.update_layout(height=430)
     st.plotly_chart(fig, use_container_width=True)
+    st.caption(
+        f"보라색 막대는 현재 분석 대상 중 위험요인을 2개 이상(중·고위험) 가진 청년의 비율, "
+        f"검은 기준선은 전체 비율({overall_share:.1f}%)입니다. ▲/▼는 전체 대비 차이(%p)입니다. "
+        "평균 위험점수는 0점대가 많아 낮게 보이므로, 위험이 중첩된 집단의 규모로 심각성을 표시했습니다. "
+        "(색 구간 0–15·15–30·30%+는 시각적 참고용 임의 구분입니다.)"
+    )
+    if risk_level != "전체":
+        st.caption(
+            f"※ 게이지는 위험점수로 정의되는 지표라 '위험수준({risk_level})' 필터는 적용하지 않았습니다. "
+            "아래 분포·표·박스플롯에는 위험수준 필터가 반영됩니다."
+        )
 
     col1, col2 = st.columns(2)
 
