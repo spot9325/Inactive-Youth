@@ -177,7 +177,7 @@ df_survey["생활비구간"] = pd.cut(
 )
 
 df_survey["위험점수"] = (
-    (df_survey[COL_PARENT] == 0).astype(int) +
+    (df_survey[COL_PARENT] != 1).astype(int) +
     (df_survey[COL_FAMILY] == 0).astype(int) +
     (df_survey[COL_NONE] == 1).astype(int) +
     (df_survey[COL_DEBT] > 0).astype(int) +
