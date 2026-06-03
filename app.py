@@ -481,35 +481,33 @@ if selected_page == pages[0]:
 elif selected_page == pages[1]:
     st.header("2. 쉬었음 청년은 무엇으로 버티는가?")
 
+    st.caption(
+        "※ 단위 주의: 소득·이전소득은 연 단위, 생활비·이자는 월 단위로 조사된 값입니다. "
+        "비교를 위해 생활비는 연 환산(월×12)했으며, 모든 금액은 1인 평균·만원 기준입니다. "
+        "또한 '청년 연간소득(총소득)'에는 사적·공적 이전소득이 이미 포함되어 있어(전체 응답자 100% 확인), "
+        "중복 합산을 피하려고 총소득을 '자력소득(근로·사업 등) / 사적 이전 / 공적 이전'으로 분해했습니다."
+    )
+
+    mean_total = safe_mean(filtered[COL_TOTAL_INCOME])
+    mean_private = safe_mean(filtered[COL_PRIVATE_INCOME])
+    mean_public = safe_mean(filtered[COL_PUBLIC_INCOME])
+    mean_self = max(mean_total - mean_private - mean_public, 0)
+    mean_living_debt = safe_mean(filtered[COL_LIVING_DEBT])
+    mean_cost_year = safe_mean(filtered[COL_COST]) * 12
+
     col1, col2, col3, col4 = st.columns(4)
-    col1.metric("평균 생활비", fmt_num(safe_mean(filtered[COL_COST])))
-    col2.metric("평균 사적 이전소득", fmt_num(safe_mean(filtered[COL_PRIVATE_INCOME])))
-    col3.metric("평균 공적 이전소득", fmt_num(safe_mean(filtered[COL_PUBLIC_INCOME])))
-    col4.metric("평균 생활비 부채", fmt_num(safe_mean(filtered[COL_LIVING_DEBT])))
+    col1.metric("평균 연 생활비(월×12)", fmt_num(mean_cost_year))
+    col2.metric("평균 자력소득(연)", fmt_num(mean_self))
+    col3.metric("평균 사적 이전(연)", fmt_num(mean_private))
+    col4.metric("평균 공적 이전(연)", fmt_num(mean_public))
 
-    total_private = safe_sum(filtered[COL_PRIVATE_INCOME])
-    total_public = safe_sum(filtered[COL_PUBLIC_INCOME])
-    total_income = safe_sum(filtered[COL_TOTAL_INCOME])
-    total_living_debt = safe_sum(filtered[COL_LIVING_DEBT])
-    total_cost = safe_sum(filtered[COL_COST])
-
-    st.subheader("생활비를 버티는 경로: Sankey Diagram")
+    st.subheader("소득은 무엇으로 구성되는가: 소득 구성 Sankey")
 
     nodes = [
+        "자력소득(근로·사업 등)",
         "사적 이전소득",
         "공적 이전소득",
-        "청년 본인 소득",
-        "생활비 목적 부채",
-        "쉬었음 청년",
-        "생활비 지출"
-    ]
-
-    values = [
-        total_private,
-        total_public,
-        total_income,
-        total_living_debt,
-        total_cost
+        "청년 연간 총소득"
     ]
 
     fig = go.Figure(data=[go.Sankey(
@@ -518,39 +516,52 @@ elif selected_page == pages[1]:
             thickness=20,
             line=dict(color="rgba(80,80,80,0.4)", width=0.6),
             label=nodes,
-            color=["#7b68ee", "#4dabf7", "#51cf66", "#ff922b", "#adb5bd", "#495057"]
+            color=["#51cf66", "#7b68ee", "#4dabf7", "#495057"]
         ),
         link=dict(
-            source=[0, 1, 2, 3, 4],
-            target=[4, 4, 4, 4, 5],
-            value=values,
+            source=[0, 1, 2],
+            target=[3, 3, 3],
+            value=[mean_self, mean_private, mean_public],
             color=[
-                "rgba(123,104,238,0.35)",
-                "rgba(77,171,247,0.35)",
                 "rgba(81,207,102,0.35)",
-                "rgba(255,146,43,0.35)",
-                "rgba(73,80,87,0.25)"
+                "rgba(123,104,238,0.35)",
+                "rgba(77,171,247,0.35)"
             ]
         )
     )])
-    fig.update_layout(title_text="쉬었음 청년의 생활비 충당 구조", height=560)
+    fig.update_layout(
+        title_text="쉬었음 청년의 연간 소득 구성 (1인 평균, 만원)",
+        height=520
+    )
     st.plotly_chart(fig, use_container_width=True)
+    st.caption(
+        "세 구성요소(자력소득 + 사적 이전 + 공적 이전)의 합이 청년 연간 총소득과 정확히 일치하도록 "
+        "분해해, 흐름이 보존되고 이전소득이 중복 계산되지 않습니다."
+    )
 
-    source_df = pd.DataFrame({
-        "구분": ["사적 이전소득", "공적 이전소득", "청년 본인 소득", "생활비 목적 부채"],
-        "총액": [total_private, total_public, total_income, total_living_debt]
+    st.subheader("연간 생활비와 가용 자원 비교 (1인 평균, 만원)")
+
+    compare_df = pd.DataFrame({
+        "항목": ["연 환산 생활비", "자력소득", "사적 이전소득", "공적 이전소득", "생활비 목적 부채(잔액)"],
+        "금액": [mean_cost_year, mean_self, mean_private, mean_public, mean_living_debt],
+        "구분": ["지출", "소득", "소득", "소득", "부채"]
     })
 
     fig_bar = px.bar(
-        source_df,
-        x="구분",
-        y="총액",
-        text="총액",
-        title="생활비 충당 자원의 총량 비교"
+        compare_df,
+        x="항목",
+        y="금액",
+        color="구분",
+        text="금액",
+        title="생활비 대비 소득·부채 자원 (1인 평균, 만원)"
     )
     fig_bar.update_traces(texttemplate="%{text:,.0f}", textposition="outside")
-    fig_bar.update_layout(height=430)
+    fig_bar.update_layout(height=460)
     st.plotly_chart(fig_bar, use_container_width=True)
+    st.caption(
+        "생활비는 가구 기준, 소득은 청년 개인 기준일 수 있어 두 값의 직접적인 차감 해석은 주의가 필요합니다. "
+        "여기서는 수준 비교용으로만 제시합니다."
+    )
 
     insight_box(
         "핵심 인사이트",
