@@ -814,33 +814,46 @@ elif selected_page == pages[3]:
             st.plotly_chart(fig, use_container_width=True)
 
         with col2:
-            exposure = pd.DataFrame({
-                "항목": ["공적지원 보유", "부채 보유", "이자 부담", "도움 받을 곳 없음"],
-                "비율": [
-                    safe_mean(no_family[COL_PUBLIC]),
-                    (no_family[COL_DEBT] > 0).mean(),
-                    (no_family[COL_INTEREST] > 0).mean(),
-                    safe_mean(no_family[COL_NONE])
+            nf = no_family.copy()
+            nf["공적지원여부"] = np.where(
+                pd.to_numeric(nf[COL_PUBLIC_INCOME], errors="coerce").fillna(0) > 0,
+                "공적지원 보유", "공적지원 미보유"
+            )
+            chi = chi2_holding(nf, "공적지원여부", COL_DEBT)
+
+            order = ["공적지원 미보유", "공적지원 보유"]
+            rate_df = pd.DataFrame({
+                "공적지원": order,
+                "부채 보유율": [
+                    holding_rate(nf.loc[nf["공적지원여부"] == k, COL_DEBT]) for k in order
                 ]
             })
+
             fig = px.bar(
-                exposure,
-                x="항목",
-                y="비율",
-                text=exposure["비율"].apply(lambda v: f"{v:.1%}"),
-                title="가족지원 부재 집단의 공적지원·부채·고립 노출 비율"
+                rate_df,
+                x="공적지원",
+                y="부채 보유율",
+                color="공적지원",
+                text=rate_df["부채 보유율"].apply(lambda v: f"{v:.1%}"),
+                title="공적지원 보유 여부에 따른 부채 보유율"
             )
             fig.update_traces(textposition="outside")
-            fig.update_layout(height=480, yaxis_tickformat=".0%")
+            fig.update_layout(height=480, yaxis_tickformat=".0%", showlegend=False)
             st.plotly_chart(fig, use_container_width=True)
 
-            rho = no_family[COL_PUBLIC_INCOME].corr(no_family[COL_DEBT], method="spearman")
-            rho_txt = "계산 불가" if pd.isna(rho) else f"{rho:.3f}"
-            st.caption(
-                f"※ 공적 이전소득과 부채 총액의 순위상관(Spearman)은 {rho_txt}로 사실상 관계가 없고, "
-                "두 변수 모두 값이 0인 경우가 대부분이라 분포 패턴이 드러나지 않습니다. "
-                "그래서 '관계'를 그리는 대신 공적지원·부채·고립 노출 비율 비교로 대체했습니다."
-            )
+            diff = abs(rate_df["부채 보유율"].iloc[1] - rate_df["부채 보유율"].iloc[0])
+            if chi is not None:
+                verdict = "유의한 차이가 없습니다" if chi["p"] >= 0.05 else "통계적으로 유의한 차이가 있습니다"
+                st.caption(
+                    f"※ 두 집단의 부채 보유율 차이는 {diff*100:.1f}%p이고, {chi['method']} 결과 "
+                    f"p = {fmt_p(chi['p'])}로 {verdict}. "
+                    "즉 공적지원을 받는다고 해서 부채 위험이 낮아진다고 보기는 어렵습니다. "
+                    "(두 변수 모두 0이 대부분이라 밀도 히트맵 대신 보유율 2×2 비교로 관계 유무를 직접 확인했습니다.)"
+                )
+            else:
+                st.caption(
+                    "※ 표본이 작아 공적지원 보유 여부와 부채 보유의 통계 검정은 생략했습니다."
+                )
 
         st.subheader("가족지원 부재 집단의 생활비·소득·부채 분포")
 
