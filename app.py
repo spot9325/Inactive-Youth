@@ -1061,25 +1061,6 @@ elif selected_page == pages[5]:
     fig.update_layout(height=560)
     st.plotly_chart(fig, use_container_width=True)
 
-    fig = px.scatter(
-        filtered,
-        x=COL_COST,
-        y=COL_TOTAL_INCOME,
-        size=COL_DEBT,
-        color="생활안전망유형",
-        hover_data=[
-            COL_PRIVATE_INCOME,
-            COL_PUBLIC_INCOME,
-            COL_DEBT,
-            COL_LIVING_DEBT,
-            COL_INTEREST,
-            "위험점수"
-        ],
-        title="생활비·소득·부채로 본 생활안전망 유형"
-    )
-    fig.update_layout(height=620)
-    st.plotly_chart(fig, use_container_width=True)
-
     type_profile = filtered.groupby("생활안전망유형").agg(
         인원수=("생활안전망유형", "count"),
         평균생활비=(COL_COST, "mean"),
@@ -1090,6 +1071,55 @@ elif selected_page == pages[5]:
         이자_보유율=(COL_INTEREST, holding_rate),
         평균위험점수=("위험점수", "mean")
     ).reset_index()
+
+    st.subheader("유형별 자원·부채 보유율 비교")
+
+    rate_cols = {
+        "사적이전_보유율": "사적이전 보유율",
+        "공적이전_보유율": "공적이전 보유율",
+        "부채_보유율": "부채 보유율",
+        "이자_보유율": "이자 보유율"
+    }
+    rate_long = type_profile.melt(
+        id_vars="생활안전망유형",
+        value_vars=list(rate_cols.keys()),
+        var_name="지표",
+        value_name="보유율"
+    )
+    rate_long["지표"] = rate_long["지표"].map(rate_cols)
+
+    fig = px.bar(
+        rate_long,
+        x="생활안전망유형",
+        y="보유율",
+        color="지표",
+        barmode="group",
+        text=rate_long["보유율"].apply(lambda v: f"{v:.0%}"),
+        title="유형별 자원·부채 보유율 (1인 기준, %)"
+    )
+    fig.update_traces(textposition="outside")
+    fig.update_layout(height=520, yaxis_tickformat=".0%", legend_title_text="")
+    st.plotly_chart(fig, use_container_width=True)
+    st.caption(
+        "각 유형이 어떤 자원·부담에 노출돼 있는지 보유율로 비교합니다. "
+        "유형은 정의상 특정 변수(공공지원형=공적이전, 금융부담형=부채·이자, 고립위험형=도움망 없음)와 직접 연결되므로, "
+        "막대 높이로 유형별 성격이 드러납니다."
+    )
+
+    st.subheader("유형별 평균 위험점수")
+
+    type_risk = type_profile.sort_values("평균위험점수", ascending=False)
+    fig = px.bar(
+        type_risk,
+        x="생활안전망유형",
+        y="평균위험점수",
+        color="생활안전망유형",
+        text=type_risk["평균위험점수"].apply(lambda v: f"{v:.2f}"),
+        title="유형별 평균 생활안전망 위험점수 (0–5)"
+    )
+    fig.update_traces(textposition="outside")
+    fig.update_layout(height=420, showlegend=False, yaxis_range=[0, 5])
+    st.plotly_chart(fig, use_container_width=True)
 
     st.subheader("유형별 프로파일")
     st.dataframe(type_profile, use_container_width=True)
@@ -1102,9 +1132,10 @@ elif selected_page == pages[5]:
         "핵심 인사이트",
         """
         유형 분류는 쉬었음 청년을 하나의 취약 집단으로 묶어 설명하는 방식의 한계를 보완한다.
-        가족완충형은 가족지원과 부모동거를 통해 생활비 위험을 일정 부분 흡수하는 집단이며, 금융부담형은 부채나 이자 부담을 통해 현재의 생활비를 미래의 부담으로 이전하는 집단이다.
-        공공지원형은 공적 안전망과 연결되어 있다는 점에서 상대적으로 정책 접점이 존재하지만, 지원 규모가 충분한지는 별도 검토가 필요하다.
-        고립위험형은 도움 받을 곳이 없다는 점에서 가장 심각한 사각지대이며, 단순히 소득이나 부채 규모만으로는 포착되지 않는 사회적 취약성을 보여준다.
+        보유율 비교 막대를 보면 각 유형이 서로 다른 자원·부담 구조에 놓여 있음이 드러난다. 금융부담형은 부채·이자 보유율이 두드러지게 높고, 공공지원형은 공적이전 보유율이 높으며, 가족완충형은 가족지원·부모동거로 생활비 위험을 일정 부분 흡수한다.
+        고립위험형은 어느 자원에서도 보유율이 낮아 도움 받을 곳이 없다는 점에서 가장 심각한 사각지대다.
+        평균 위험점수 막대는 이 차이를 한 줄로 요약해, 어떤 유형이 위험요인을 더 많이 중첩해 안고 있는지 유형 간 서열을 보여준다.
+        결국 같은 '쉬었음' 상태라도 기대어 있는 안전망의 종류가 다르며, 이는 단순한 소득·부채 규모만으로는 포착되지 않는 차이다.
         """
     )
 
