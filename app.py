@@ -686,16 +686,33 @@ elif selected_page == pages[3]:
             st.plotly_chart(fig, use_container_width=True)
 
         with col2:
-            fig = px.density_heatmap(
-                no_family,
-                x=COL_PUBLIC_INCOME,
-                y=COL_DEBT,
-                marginal_x="histogram",
-                marginal_y="histogram",
-                title="공적 이전소득과 부채의 관계"
+            exposure = pd.DataFrame({
+                "항목": ["공적지원 보유", "부채 보유", "이자 부담", "도움 받을 곳 없음"],
+                "비율": [
+                    safe_mean(no_family[COL_PUBLIC]),
+                    (no_family[COL_DEBT] > 0).mean(),
+                    (no_family[COL_INTEREST] > 0).mean(),
+                    safe_mean(no_family[COL_NONE])
+                ]
+            })
+            fig = px.bar(
+                exposure,
+                x="항목",
+                y="비율",
+                text=exposure["비율"].apply(lambda v: f"{v:.1%}"),
+                title="가족지원 부재 집단의 공적지원·부채·고립 노출 비율"
             )
-            fig.update_layout(height=480)
+            fig.update_traces(textposition="outside")
+            fig.update_layout(height=480, yaxis_tickformat=".0%")
             st.plotly_chart(fig, use_container_width=True)
+
+            rho = no_family[COL_PUBLIC_INCOME].corr(no_family[COL_DEBT], method="spearman")
+            rho_txt = "계산 불가" if pd.isna(rho) else f"{rho:.3f}"
+            st.caption(
+                f"※ 공적 이전소득과 부채 총액의 순위상관(Spearman)은 {rho_txt}로 사실상 관계가 없고, "
+                "두 변수 모두 값이 0인 경우가 대부분이라 분포 패턴이 드러나지 않습니다. "
+                "그래서 '관계'를 그리는 대신 공적지원·부채·고립 노출 비율 비교로 대체했습니다."
+            )
 
         st.subheader("가족지원 부재 집단의 생활비·소득·부채 분포")
 
