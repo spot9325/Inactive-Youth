@@ -6,6 +6,7 @@ import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
 import streamlit as st
+from scipy import stats
 
 
 # =========================================================
@@ -247,6 +248,47 @@ def holder_median(series):
     if len(s) == 0:
         return 0.0
     return float(s.median())
+
+
+def fmt_p(p):
+    if pd.isna(p):
+        return "계산 불가"
+    if p < 0.001:
+        return "< 0.001"
+    return f"{p:.3f}"
+
+
+def mann_whitney(data, group_col, label_a, label_b, value_col, min_n=10):
+    ga = pd.to_numeric(data.loc[data[group_col] == label_a, value_col], errors="coerce").dropna()
+    gb = pd.to_numeric(data.loc[data[group_col] == label_b, value_col], errors="coerce").dropna()
+    if len(ga) < min_n or len(gb) < min_n:
+        return None
+    try:
+        _, p = stats.mannwhitneyu(ga, gb, alternative="two-sided")
+    except ValueError:
+        return None
+    return {
+        "n_a": int(len(ga)), "n_b": int(len(gb)),
+        "med_a": float(ga.median()), "med_b": float(gb.median()),
+        "p": float(p)
+    }
+
+
+def chi2_holding(data, group_col, value_col, threshold=0, min_n=10):
+    sub = data[[group_col, value_col]].copy()
+    sub[value_col] = pd.to_numeric(sub[value_col], errors="coerce")
+    sub = sub.dropna()
+    sub["__has"] = sub[value_col] > threshold
+    ct = pd.crosstab(sub[group_col], sub["__has"])
+    if ct.shape[0] < 2 or ct.shape[1] < 2 or int(ct.values.sum()) < min_n:
+        return None
+    chi2, p, dof, expected = stats.chi2_contingency(ct)
+    method = "카이제곱 검정"
+    if ct.shape == (2, 2) and (expected < 5).any():
+        _, p = stats.fisher_exact(ct.values)
+        method = "Fisher 정확검정"
+    rates = sub.groupby(group_col)["__has"].mean().to_dict()
+    return {"method": method, "p": float(p), "rates": rates}
 
 
 def insight_box(title, body):
@@ -656,6 +698,44 @@ elif selected_page == pages[2]:
         )
         fig.update_layout(height=480)
         st.plotly_chart(fig, use_container_width=True)
+
+    st.subheader("통계 검정: 가족 안전망 효과가 유의한가?")
+
+    chi_debt = chi2_holding(filtered, "부모동거", COL_DEBT)
+    mw_debt = mann_whitney(filtered, "부모동거", "부모 동거", "부모 비동거", COL_DEBT)
+    mw_cost = mann_whitney(filtered, "가족지원", "가족 도움 가능", "가족 도움 없음", COL_COST)
+
+    lines = []
+    if chi_debt:
+        r = chi_debt["rates"]
+        lines.append(
+            f"- **부모 동거 ↔ 부채 보유**({chi_debt['method']}): p = {fmt_p(chi_debt['p'])} · "
+            f"보유율 동거 {r.get('부모 동거', float('nan')):.1%} vs 비동거 {r.get('부모 비동거', float('nan')):.1%}"
+        )
+    if mw_debt:
+        lines.append(
+            f"- **부모 동거 ↔ 부채 총액**(Mann–Whitney U): p = {fmt_p(mw_debt['p'])} · "
+            f"중앙값 동거 {fmt_num(mw_debt['med_a'])} vs 비동거 {fmt_num(mw_debt['med_b'])}만 원 "
+            f"(n = {mw_debt['n_a']} / {mw_debt['n_b']})"
+        )
+    if mw_cost:
+        lines.append(
+            f"- **가족지원 ↔ 월 생활비**(Mann–Whitney U): p = {fmt_p(mw_cost['p'])} · "
+            f"중앙값 도움가능 {fmt_num(mw_cost['med_a'])} vs 도움없음 {fmt_num(mw_cost['med_b'])}만 원 "
+            f"(n = {mw_cost['n_a']} / {mw_cost['n_b']})"
+        )
+
+    if lines:
+        st.markdown("\n".join(lines))
+    else:
+        st.info("현재 필터에서는 두 비교 집단의 표본이 부족해(각 n<10) 통계 검정을 생략했습니다. 필터를 완화하면 결과가 표시됩니다.")
+
+    st.caption(
+        "검정 방법: 부채·생활비는 분포가 0 쪽으로 크게 치우쳐 정규성을 가정하는 t-검정 대신 "
+        "비모수 검정인 Mann–Whitney U와 카이제곱(기대빈도가 5 미만이면 Fisher 정확검정)을 사용했습니다. "
+        "각 집단 n<10이면 검정을 생략합니다. 위험점수·생활안전망유형은 부채·가족 변수로 정의된 파생지표여서 "
+        "순환논리를 피하려고 검정 대상에서 제외했습니다."
+    )
 
     st.subheader("부모동거 → 가족지원 → 부채여부 구조")
 
