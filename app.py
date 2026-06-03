@@ -517,6 +517,35 @@ if selected_page == pages[0]:
                 "※ ‘전체’·‘15–64세’·‘15–29세’·‘15–24세’처럼 다른 구간과 겹치는 합계 구간은 중복 집계라 제외하고, "
                 "서로 겹치지 않는 단일 연령대만 표시했습니다. 청년(15–19세·20–29세)을 다른 연령대와 비교해 보세요. 단위: 천 명."
             )
+
+            youth_bands = ["15 - 19세", "20 - 29세"]
+            youth_long = trend_long[trend_long[category_col].isin(youth_bands)].copy()
+
+            if len(youth_long) > 0:
+                youth_total = youth_long.groupby("연도", as_index=False)["인구"].sum()
+                youth_total[category_col] = "15 - 29세 합계"
+                youth_plot = pd.concat([youth_long, youth_total], ignore_index=True)
+
+                youth_order = youth_bands + ["15 - 29세 합계"]
+                youth_plot[category_col] = pd.Categorical(
+                    youth_plot[category_col], categories=youth_order, ordered=True
+                )
+                youth_plot = youth_plot.sort_values([category_col, "연도"])
+
+                fig = px.line(
+                    youth_plot,
+                    x="연도",
+                    y="인구",
+                    color=category_col,
+                    markers=True,
+                    title="청년(15–29세) 쉬었음 인구 추이 (천 명)"
+                )
+                fig.update_layout(height=460)
+                st.plotly_chart(fig, use_container_width=True)
+                st.caption(
+                    "※ 위 추이에서 청년 구간만 떼어 본 그래프입니다. 단일 구간(15–19세·20–29세)과 "
+                    "두 구간을 합산한 15–29세 합계를 함께 표시했습니다. 단위: 천 명."
+                )
         else:
             fig = px.line(
                 trend_long,
@@ -600,10 +629,17 @@ elif selected_page == pages[1]:
     ]
 
     fig = go.Figure(data=[go.Sankey(
+        textfont=dict(
+            color="#111111",
+            size=15,
+            family="Malgun Gothic, Apple SD Gothic Neo, sans-serif",
+            weight="bold",
+            shadow="none"
+        ),
         node=dict(
             pad=22,
-            thickness=20,
-            line=dict(color="rgba(80,80,80,0.4)", width=0.6),
+            thickness=22,
+            line=dict(color="rgba(80,80,80,0.5)", width=0.8),
             label=nodes,
             color=["#51cf66", "#7b68ee", "#4dabf7", "#495057"]
         ),
