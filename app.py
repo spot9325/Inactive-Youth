@@ -6,6 +6,7 @@ import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
 import streamlit as st
+from scipy import stats
 
 
 # =========================================================
@@ -177,7 +178,7 @@ df_survey["생활비구간"] = pd.cut(
 )
 
 df_survey["위험점수"] = (
-    (df_survey[COL_PARENT] == 0).astype(int) +
+    (df_survey[COL_PARENT] != 1).astype(int) +
     (df_survey[COL_FAMILY] == 0).astype(int) +
     (df_survey[COL_NONE] == 1).astype(int) +
     (df_survey[COL_DEBT] > 0).astype(int) +
@@ -232,6 +233,62 @@ def fmt_num(x):
     if pd.isna(x):
         return "0"
     return f"{x:,.0f}"
+
+
+def holding_rate(series):
+    s = pd.to_numeric(series, errors="coerce")
+    if len(s) == 0:
+        return 0.0
+    return float((s > 0).mean())
+
+
+def holder_median(series):
+    s = pd.to_numeric(series, errors="coerce")
+    s = s[s > 0]
+    if len(s) == 0:
+        return 0.0
+    return float(s.median())
+
+
+def fmt_p(p):
+    if pd.isna(p):
+        return "계산 불가"
+    if p < 0.001:
+        return "< 0.001"
+    return f"{p:.3f}"
+
+
+def mann_whitney(data, group_col, label_a, label_b, value_col, min_n=10):
+    ga = pd.to_numeric(data.loc[data[group_col] == label_a, value_col], errors="coerce").dropna()
+    gb = pd.to_numeric(data.loc[data[group_col] == label_b, value_col], errors="coerce").dropna()
+    if len(ga) < min_n or len(gb) < min_n:
+        return None
+    try:
+        _, p = stats.mannwhitneyu(ga, gb, alternative="two-sided")
+    except ValueError:
+        return None
+    return {
+        "n_a": int(len(ga)), "n_b": int(len(gb)),
+        "med_a": float(ga.median()), "med_b": float(gb.median()),
+        "p": float(p)
+    }
+
+
+def chi2_holding(data, group_col, value_col, threshold=0, min_n=10):
+    sub = data[[group_col, value_col]].copy()
+    sub[value_col] = pd.to_numeric(sub[value_col], errors="coerce")
+    sub = sub.dropna()
+    sub["__has"] = sub[value_col] > threshold
+    ct = pd.crosstab(sub[group_col], sub["__has"])
+    if ct.shape[0] < 2 or ct.shape[1] < 2 or int(ct.values.sum()) < min_n:
+        return None
+    chi2, p, dof, expected = stats.chi2_contingency(ct)
+    method = "카이제곱 검정"
+    if ct.shape == (2, 2) and (expected < 5).any():
+        _, p = stats.fisher_exact(ct.values)
+        method = "Fisher 정확검정"
+    rates = sub.groupby(group_col)["__has"].mean().to_dict()
+    return {"method": method, "p": float(p), "rates": rates}
 
 
 def insight_box(title, body):
@@ -342,9 +399,6 @@ filtered = df_survey.copy()
 if analysis_type != "전체":
     filtered = filtered[filtered["생활안전망유형"] == analysis_type]
 
-if risk_level != "전체":
-    filtered = filtered[filtered["위험수준"].astype(str) == risk_level]
-
 if parent_filter != "전체":
     filtered = filtered[filtered["부모동거"] == parent_filter]
 
@@ -365,6 +419,13 @@ if isolation_filter != "전체":
 
 if cost_filter != "전체":
     filtered = filtered[filtered["생활비구간"].astype(str) == cost_filter]
+
+# 위험수준 필터는 위험점수로 직접 정의되므로, 위험점수 기반 지표(위험군 비율 게이지)에서는
+# 순환참조를 피하기 위해 적용 직전의 집단을 따로 보관한다.
+filtered_excl_risk = filtered
+
+if risk_level != "전체":
+    filtered = filtered[filtered["위험수준"].astype(str) == risk_level]
 
 if len(filtered) == 0:
     st.warning("현재 필터 조건에 해당하는 데이터가 없습니다. 필터를 완화해주세요.")
@@ -422,18 +483,69 @@ if selected_page == pages[0]:
             value_name="인구"
         )
 
-        trend_long["인구"] = pd.to_numeric(trend_long["인구"], errors="coerce").fillna(0)
+        trend_long["인구"] = pd.to_numeric(
+            trend_long["인구"].astype(str).str.replace(",", "", regex=False),
+            errors="coerce"
+        )
         category_col = id_cols[0] if len(id_cols) > 0 else None
 
         if category_col:
+            age_bands = ["15 - 19세", "20 - 29세", "30 - 39세", "40 - 49세", "50 - 59세", "60세이상"]
+            trend_long[category_col] = trend_long[category_col].astype(str).str.strip()
+            age_long = trend_long[trend_long[category_col].isin(age_bands)].copy()
+
+            if len(age_long) == 0:
+                st.warning("연령대 행을 찾지 못해 전체 추이를 표시합니다.")
+                age_long = trend_long
+            else:
+                age_long[category_col] = pd.Categorical(
+                    age_long[category_col], categories=age_bands, ordered=True
+                )
+                age_long = age_long.sort_values([category_col, "연도"])
+
             fig = px.line(
-                trend_long,
+                age_long,
                 x="연도",
                 y="인구",
                 color=category_col,
                 markers=True,
-                title="연도별 쉬었음·비경제활동인구 추이"
+                title="연도별 연령대별 쉬었음 인구 추이 (천 명)"
             )
+            fig.update_layout(height=520)
+            st.plotly_chart(fig, use_container_width=True)
+            st.caption(
+                "※ ‘전체’·‘15–64세’·‘15–29세’·‘15–24세’처럼 다른 구간과 겹치는 합계 구간은 중복 집계라 제외하고, "
+                "서로 겹치지 않는 단일 연령대만 표시했습니다. 청년(15–19세·20–29세)을 다른 연령대와 비교해 보세요. 단위: 천 명."
+            )
+
+            youth_bands = ["15 - 19세", "20 - 29세"]
+            youth_long = trend_long[trend_long[category_col].isin(youth_bands)].copy()
+
+            if len(youth_long) > 0:
+                youth_total = youth_long.groupby("연도", as_index=False)["인구"].sum()
+                youth_total[category_col] = "15 - 29세 합계"
+                youth_plot = pd.concat([youth_long, youth_total], ignore_index=True)
+
+                youth_order = youth_bands + ["15 - 29세 합계"]
+                youth_plot[category_col] = pd.Categorical(
+                    youth_plot[category_col], categories=youth_order, ordered=True
+                )
+                youth_plot = youth_plot.sort_values([category_col, "연도"])
+
+                fig = px.line(
+                    youth_plot,
+                    x="연도",
+                    y="인구",
+                    color=category_col,
+                    markers=True,
+                    title="청년(15–29세) 쉬었음 인구 추이 (천 명)"
+                )
+                fig.update_layout(height=460)
+                st.plotly_chart(fig, use_container_width=True)
+                st.caption(
+                    "※ 위 추이에서 청년 구간만 떼어 본 그래프입니다. 단일 구간(15–19세·20–29세)과 "
+                    "두 구간을 합산한 15–29세 합계를 함께 표시했습니다. 단위: 천 명."
+                )
         else:
             fig = px.line(
                 trend_long,
@@ -442,8 +554,8 @@ if selected_page == pages[0]:
                 markers=True,
                 title="연도별 쉬었음 인구 추이"
             )
-        fig.update_layout(height=520)
-        st.plotly_chart(fig, use_container_width=True)
+            fig.update_layout(height=520)
+            st.plotly_chart(fig, use_container_width=True)
     else:
         st.warning("연도형 컬럼을 찾지 못했습니다. 원자료 일부를 표시합니다.")
         st.dataframe(df_trend.head(20), use_container_width=True)
@@ -451,16 +563,22 @@ if selected_page == pages[0]:
     col1, col2, col3, col4 = st.columns(4)
     col1.metric("분석 대상 수", f"{len(filtered):,}명")
     col2.metric("평균 생활비", fmt_num(safe_mean(filtered[COL_COST])))
-    col3.metric("평균 부채", fmt_num(safe_mean(filtered[COL_DEBT])))
+    col3.metric("부채 보유율", f"{holding_rate(filtered[COL_DEBT]):.1%}")
     col4.metric("평균 위험점수", f"{safe_mean(filtered['위험점수']):.2f} / 5")
+
+    st.caption(
+        f"※ 부채는 응답자의 약 {1 - holding_rate(filtered[COL_DEBT]):.0%}가 0이라 평균이 소수 고액 부채자에 좌우됩니다. "
+        f"부채 보유자({holding_rate(filtered[COL_DEBT]):.1%})의 부채 중앙값은 {fmt_num(holder_median(filtered[COL_DEBT]))}만 원입니다. "
+        "(평균 부채 표기 대신 보유율·보유자 중앙값으로 표시)"
+    )
 
     insight_box(
         "해석",
         """
         이 프로젝트의 핵심은 ‘쉬었음 청년이 많다’는 규모 확인에서 멈추지 않는 것이다.
-        규모 통계는 문제의 사회적 배경을 제시하지만, 실제로 중요한 질문은 이들이 노동시장 밖에 있는 동안 어떤 자원으로 생활을 유지하는지이다.
-        같은 쉬었음 상태라도 가족의 도움을 받을 수 있는 청년과 그렇지 않은 청년, 부채와 이자 부담을 떠안은 청년과 그렇지 않은 청년의 생활 조건은 크게 다를 수 있다.
-        따라서 이후 분석은 쉬었음 청년을 하나의 단일 집단으로 보지 않고, 생활비를 버티는 방식과 안전망 접근성의 차이를 중심으로 내부 격차를 추적한다.
+        규모 통계는 문제의 사회적 배경을 보여주지만, 정작 중요한 질문은 이들이 노동시장 밖에 있는 동안 어떤 자원으로 생활을 유지하는가이다.
+        위 추이에서는 청년(15–19·20–29세)을 다른 연령대와 비교해 쉬었음의 흐름을 가늠할 수 있고, 부채처럼 응답자의 대다수가 0인 변수는 평균 대신 ‘보유율’로 보아 소수의 고액 사례에 평균이 휘둘리지 않도록 했다.
+        같은 쉬었음 상태라도 가족의 도움을 받을 수 있는지, 부채·이자 부담을 지는지에 따라 생활 조건은 크게 달라지므로, 이후 분석은 이 내부 격차를 추적한다.
         """
     )
 
@@ -481,93 +599,112 @@ if selected_page == pages[0]:
 elif selected_page == pages[1]:
     st.header("2. 쉬었음 청년은 무엇으로 버티는가?")
 
+    st.caption(
+        "※ 단위 주의: 소득·이전소득은 연 단위, 생활비·이자는 월 단위로 조사된 값입니다. "
+        "비교를 위해 생활비는 연 환산(월×12)했으며, 모든 금액은 1인 평균·만원 기준입니다. "
+        "또한 '청년 연간소득(총소득)'에는 사적·공적 이전소득이 이미 포함되어 있어(전체 응답자 100% 확인), "
+        "중복 합산을 피하려고 총소득을 '자력소득(근로·사업 등) / 사적 이전 / 공적 이전'으로 분해했습니다."
+    )
+
+    mean_total = safe_mean(filtered[COL_TOTAL_INCOME])
+    mean_private = safe_mean(filtered[COL_PRIVATE_INCOME])
+    mean_public = safe_mean(filtered[COL_PUBLIC_INCOME])
+    mean_self = max(mean_total - mean_private - mean_public, 0)
+    mean_living_debt = safe_mean(filtered[COL_LIVING_DEBT])
+    mean_cost_year = safe_mean(filtered[COL_COST]) * 12
+
     col1, col2, col3, col4 = st.columns(4)
-    col1.metric("평균 생활비", fmt_num(safe_mean(filtered[COL_COST])))
-    col2.metric("평균 사적 이전소득", fmt_num(safe_mean(filtered[COL_PRIVATE_INCOME])))
-    col3.metric("평균 공적 이전소득", fmt_num(safe_mean(filtered[COL_PUBLIC_INCOME])))
-    col4.metric("평균 생활비 부채", fmt_num(safe_mean(filtered[COL_LIVING_DEBT])))
+    col1.metric("평균 연 생활비(월×12)", fmt_num(mean_cost_year))
+    col2.metric("평균 자력소득(연)", fmt_num(mean_self))
+    col3.metric("평균 사적 이전(연)", fmt_num(mean_private))
+    col4.metric("평균 공적 이전(연)", fmt_num(mean_public))
 
-    total_private = safe_sum(filtered[COL_PRIVATE_INCOME])
-    total_public = safe_sum(filtered[COL_PUBLIC_INCOME])
-    total_income = safe_sum(filtered[COL_TOTAL_INCOME])
-    total_living_debt = safe_sum(filtered[COL_LIVING_DEBT])
-    total_cost = safe_sum(filtered[COL_COST])
-
-    st.subheader("생활비를 버티는 경로: Sankey Diagram")
+    st.subheader("소득은 무엇으로 구성되는가: 소득 구성 Sankey")
 
     nodes = [
+        "자력소득(근로·사업 등)",
         "사적 이전소득",
         "공적 이전소득",
-        "청년 본인 소득",
-        "생활비 목적 부채",
-        "쉬었음 청년",
-        "생활비 지출"
-    ]
-
-    values = [
-        total_private,
-        total_public,
-        total_income,
-        total_living_debt,
-        total_cost
+        "청년 연간 총소득"
     ]
 
     fig = go.Figure(data=[go.Sankey(
+        textfont=dict(
+            color="#111111",
+            size=15,
+            family="Malgun Gothic, Apple SD Gothic Neo, sans-serif",
+            weight="bold",
+            shadow="none"
+        ),
         node=dict(
             pad=22,
-            thickness=20,
-            line=dict(color="rgba(80,80,80,0.4)", width=0.6),
+            thickness=22,
+            line=dict(color="rgba(80,80,80,0.5)", width=0.8),
             label=nodes,
-            color=["#7b68ee", "#4dabf7", "#51cf66", "#ff922b", "#adb5bd", "#495057"]
+            color=["#51cf66", "#7b68ee", "#4dabf7", "#495057"]
         ),
         link=dict(
-            source=[0, 1, 2, 3, 4],
-            target=[4, 4, 4, 4, 5],
-            value=values,
+            source=[0, 1, 2],
+            target=[3, 3, 3],
+            value=[mean_self, mean_private, mean_public],
             color=[
-                "rgba(123,104,238,0.35)",
-                "rgba(77,171,247,0.35)",
                 "rgba(81,207,102,0.35)",
-                "rgba(255,146,43,0.35)",
-                "rgba(73,80,87,0.25)"
+                "rgba(123,104,238,0.35)",
+                "rgba(77,171,247,0.35)"
             ]
         )
     )])
-    fig.update_layout(title_text="쉬었음 청년의 생활비 충당 구조", height=560)
+    fig.update_layout(
+        title_text="쉬었음 청년의 연간 소득 구성 (1인 평균, 만원)",
+        height=520
+    )
     st.plotly_chart(fig, use_container_width=True)
+    st.caption(
+        "세 구성요소(자력소득 + 사적 이전 + 공적 이전)의 합이 청년 연간 총소득과 정확히 일치하도록 "
+        "분해해, 흐름이 보존되고 이전소득이 중복 계산되지 않습니다."
+    )
 
-    source_df = pd.DataFrame({
-        "구분": ["사적 이전소득", "공적 이전소득", "청년 본인 소득", "생활비 목적 부채"],
-        "총액": [total_private, total_public, total_income, total_living_debt]
+    st.subheader("연간 생활비와 가용 자원 비교 (1인 평균, 만원)")
+
+    compare_df = pd.DataFrame({
+        "항목": ["연 환산 생활비", "자력소득", "사적 이전소득", "공적 이전소득", "생활비 목적 부채(잔액)"],
+        "금액": [mean_cost_year, mean_self, mean_private, mean_public, mean_living_debt],
+        "구분": ["지출", "소득", "소득", "소득", "부채"]
     })
 
     fig_bar = px.bar(
-        source_df,
-        x="구분",
-        y="총액",
-        text="총액",
-        title="생활비 충당 자원의 총량 비교"
+        compare_df,
+        x="항목",
+        y="금액",
+        color="구분",
+        text="금액",
+        title="생활비 대비 소득·부채 자원 (1인 평균, 만원)"
     )
     fig_bar.update_traces(texttemplate="%{text:,.0f}", textposition="outside")
-    fig_bar.update_layout(height=430)
+    fig_bar.update_layout(height=460)
     st.plotly_chart(fig_bar, use_container_width=True)
+    st.caption(
+        "생활비는 가구 기준, 소득은 청년 개인 기준일 수 있어 두 값의 직접적인 차감 해석은 주의가 필요합니다. "
+        "여기서는 수준 비교용으로만 제시합니다."
+    )
 
     insight_box(
         "핵심 인사이트",
         """
-        이 분석의 초점은 쉬었음 청년이 소득이 없는 상태에 머문다는 사실 자체가 아니라, 소득 공백을 어떤 자원으로 메우고 있는지에 있다.
-        사적 이전소득이 크게 나타난다면 이는 가족이나 주변인의 지원이 사실상 청년 생활비의 주요 완충 장치로 작동하고 있음을 의미한다.
-        반대로 공적 이전소득의 비중이 낮거나 생활비 목적 부채가 일정하게 확인된다면, 공적 안전망이 가족지원의 공백을 충분히 대체하지 못하고 있다는 해석이 가능하다.
-        이 경우 쉬었음 청년은 ‘일하지 않는 청년’이라기보다 가족·정부·금융자원 사이에서 생활비를 조달하는 불안정한 생활 유지자에 가깝다.
+        이 분석의 초점은 쉬었음 청년에게 소득이 없다는 사실 자체가 아니라, 소득이 어떤 출처로 구성되는지에 있다.
+        총소득을 자력소득(근로·사업 등)·사적 이전·공적 이전으로 분해해 보면, 정부의 공적 이전이 차지하는 몫은 매우 작고 가족·주변에서 오는 사적 이전이 그보다 크게 나타난다.
+        즉 노동시장 밖에 있는 동안의 소득 공백을 공적 안전망보다 가족 자원이 메우는 구조에 가깝다.
+        또한 연 환산 생활비가 청년 개인의 연소득을 웃도는 경우가 많은데, 이는 생활비가 가구 단위로 충당되고 있을 가능성, 곧 부모·가족의 비화폐적 지원에 기대고 있을 가능성을 시사한다.
         """
     )
 
     policy_box(
         "정책적 시사점",
         """
-        지원정책은 단순히 쉬었음 여부만으로 설계되기보다, 생활비를 어떤 방식으로 충당하는지에 따라 달라져야 한다.
-        가족지원에 의존하는 집단은 가족의 경제력 차이에 따라 생활 안정성이 달라질 수 있고, 부채에 의존하는 집단은 시간이 지날수록 금융 취약성이 누적될 수 있다.
-        따라서 정책적으로는 공적 지원이 가족지원의 공백을 얼마나 메우고 있는지, 그리고 생활비 목적 부채가 생계 유지 수단으로 전환되고 있는지를 함께 봐야 한다.
+        지원정책은 쉬었음 여부만이 아니라 소득이 무엇으로 구성되는지에 따라 달라져야 한다.
+        공적 이전의 몫이 작다는 것은 현재의 공공 안전망이 가족 자원의 공백을 충분히 대체하지 못하고 있음을 뜻한다.
+        가족 자원에 의존하는 구조는 가족의 경제력 차이에 따라 청년의 생활 안정성을 갈리게 만들고, 부족분을 부채로 메우는 청년에게는 금융 취약성이 시간이 지날수록 누적될 수 있다.
+        따라서 공적 지원의 사각지대와 가족 의존의 격차를 함께 살펴야 한다.
         """
     )
 
@@ -603,6 +740,44 @@ elif selected_page == pages[2]:
         fig.update_layout(height=480)
         st.plotly_chart(fig, use_container_width=True)
 
+    st.subheader("통계 검정: 가족 안전망 효과가 유의한가?")
+
+    chi_debt = chi2_holding(filtered, "부모동거", COL_DEBT)
+    mw_debt = mann_whitney(filtered, "부모동거", "부모 동거", "부모 비동거", COL_DEBT)
+    mw_cost = mann_whitney(filtered, "가족지원", "가족 도움 가능", "가족 도움 없음", COL_COST)
+
+    lines = []
+    if chi_debt:
+        r = chi_debt["rates"]
+        lines.append(
+            f"- **부모 동거 ↔ 부채 보유**({chi_debt['method']}): p = {fmt_p(chi_debt['p'])} · "
+            f"보유율 동거 {r.get('부모 동거', float('nan')):.1%} vs 비동거 {r.get('부모 비동거', float('nan')):.1%}"
+        )
+    if mw_debt:
+        lines.append(
+            f"- **부모 동거 ↔ 부채 총액**(Mann–Whitney U): p = {fmt_p(mw_debt['p'])} · "
+            f"중앙값 동거 {fmt_num(mw_debt['med_a'])} vs 비동거 {fmt_num(mw_debt['med_b'])}만 원 "
+            f"(n = {mw_debt['n_a']} / {mw_debt['n_b']})"
+        )
+    if mw_cost:
+        lines.append(
+            f"- **가족지원 ↔ 월 생활비**(Mann–Whitney U): p = {fmt_p(mw_cost['p'])} · "
+            f"중앙값 도움가능 {fmt_num(mw_cost['med_a'])} vs 도움없음 {fmt_num(mw_cost['med_b'])}만 원 "
+            f"(n = {mw_cost['n_a']} / {mw_cost['n_b']})"
+        )
+
+    if lines:
+        st.markdown("\n".join(lines))
+    else:
+        st.info("현재 필터에서는 두 비교 집단의 표본이 부족해(각 n<10) 통계 검정을 생략했습니다. 필터를 완화하면 결과가 표시됩니다.")
+
+    st.caption(
+        "검정 방법: 부채·생활비는 분포가 0 쪽으로 크게 치우쳐 정규성을 가정하는 t-검정 대신 "
+        "비모수 검정인 Mann–Whitney U와 카이제곱(기대빈도가 5 미만이면 Fisher 정확검정)을 사용했습니다. "
+        "각 집단 n<10이면 검정을 생략합니다. 위험점수·생활안전망유형은 부채·가족 변수로 정의된 파생지표여서 "
+        "순환논리를 피하려고 검정 대상에서 제외했습니다."
+    )
+
     st.subheader("부모동거 → 가족지원 → 부채여부 구조")
 
     sunburst_df = filtered.copy()
@@ -619,10 +794,10 @@ elif selected_page == pages[2]:
         "핵심 인사이트",
         """
         부모와 함께 산다는 사실은 쉬었음 청년에게 주거비와 생활비 부담을 완화하는 중요한 조건일 수 있다.
-        그러나 부모동거가 곧바로 안정성을 보장한다고 단정할 수는 없다.
-        실제 생활안전망은 ‘동거 여부’와 ‘가족에게 도움을 요청할 수 있는지’가 결합될 때 더 선명하게 드러난다.
-        부모와 동거하지만 가족지원이 약하거나, 부모와 비동거하면서 가족지원도 없는 집단은 쉬었음 상태에서 생활비 압박과 부채 위험에 더 쉽게 노출될 수 있다.
-        따라서 가족은 단순한 배경 변수가 아니라 쉬었음 청년의 생활비 지속 가능성을 결정하는 핵심 안전망이다.
+        위의 검정 결과를 보면, 부모와 동거하는 청년은 비동거 청년보다 부채 보유율과 부채 규모가 낮은 쪽으로 통계적으로 의미 있는 차이를 보인다.
+        다만 가족지원이 가능한 청년의 월 생활비가 오히려 더 높게 나타나는데, 이는 가족 자원이 지출을 무조건 줄인다기보다 일정 수준의 생활을 유지하게 하는 완충 역할을 한다는 해석과 맞닿는다.
+        결국 생활안전망은 ‘동거 여부’와 ‘가족에게 도움을 요청할 수 있는지’가 결합될 때 더 선명해지며, 둘 다 약한 청년은 생활비 압박과 부채 위험에 더 쉽게 노출된다.
+        따라서 가족은 단순한 배경 변수가 아니라 쉬었음 청년의 생활비 지속 가능성을 좌우하는 핵심 안전망이다.
         """
     )
 
@@ -675,16 +850,46 @@ elif selected_page == pages[3]:
             st.plotly_chart(fig, use_container_width=True)
 
         with col2:
-            fig = px.density_heatmap(
-                no_family,
-                x=COL_PUBLIC_INCOME,
-                y=COL_DEBT,
-                marginal_x="histogram",
-                marginal_y="histogram",
-                title="공적 이전소득과 부채의 관계"
+            nf = no_family.copy()
+            nf["공적지원여부"] = np.where(
+                pd.to_numeric(nf[COL_PUBLIC_INCOME], errors="coerce").fillna(0) > 0,
+                "공적지원 보유", "공적지원 미보유"
             )
-            fig.update_layout(height=480)
+            chi = chi2_holding(nf, "공적지원여부", COL_DEBT)
+
+            order = ["공적지원 미보유", "공적지원 보유"]
+            rate_df = pd.DataFrame({
+                "공적지원": order,
+                "부채 보유율": [
+                    holding_rate(nf.loc[nf["공적지원여부"] == k, COL_DEBT]) for k in order
+                ]
+            })
+
+            fig = px.bar(
+                rate_df,
+                x="공적지원",
+                y="부채 보유율",
+                color="공적지원",
+                text=rate_df["부채 보유율"].apply(lambda v: f"{v:.1%}"),
+                title="공적지원 보유 여부에 따른 부채 보유율"
+            )
+            fig.update_traces(textposition="outside")
+            fig.update_layout(height=480, yaxis_tickformat=".0%", showlegend=False)
             st.plotly_chart(fig, use_container_width=True)
+
+            diff = abs(rate_df["부채 보유율"].iloc[1] - rate_df["부채 보유율"].iloc[0])
+            if chi is not None:
+                verdict = "유의한 차이가 없습니다" if chi["p"] >= 0.05 else "통계적으로 유의한 차이가 있습니다"
+                st.caption(
+                    f"※ 두 집단의 부채 보유율 차이는 {diff*100:.1f}%p이고, {chi['method']} 결과 "
+                    f"p = {fmt_p(chi['p'])}로 {verdict}. "
+                    "즉 공적지원을 받는다고 해서 부채 위험이 낮아진다고 보기는 어렵습니다. "
+                    "(두 변수 모두 0이 대부분이라 밀도 히트맵 대신 보유율 2×2 비교로 관계 유무를 직접 확인했습니다.)"
+                )
+            else:
+                st.caption(
+                    "※ 표본이 작아 공적지원 보유 여부와 부채 보유의 통계 검정은 생략했습니다."
+                )
 
         st.subheader("가족지원 부재 집단의 생활비·소득·부채 분포")
 
@@ -704,9 +909,10 @@ elif selected_page == pages[3]:
         "핵심 인사이트",
         """
         가족지원이 없는 청년을 따로 보는 이유는 이들이 쉬었음 청년 내부에서 가장 중요한 정책적 분기점이 될 수 있기 때문이다.
-        가족지원이 작동하지 않을 때 청년은 지인, 공공기관, 민간기관, 금융자원, 또는 아무 도움도 없는 상태 중 하나로 이동한다.
-        만약 공적지원보다 부채나 도움 없음의 비중이 크게 나타난다면 이는 공공 안전망이 가족지원의 공백을 충분히 대체하지 못하고 있음을 의미한다.
-        특히 가족지원도 없고 공적지원도 약하며 부채와 이자 부담이 동반되는 집단은 단기적 생활비 문제를 장기적 금융 취약성으로 전환시킬 위험이 있다.
+        가족지원이 작동하지 않을 때 청년은 지인·공공기관·민간기관·금융자원, 또는 아무 도움도 없는 상태 중 하나로 이동한다.
+        위 비율 비교를 보면 이 집단에서는 ‘도움 받을 곳 없음’의 비중이 공적지원 보유 비중보다 크게 나타나, 공공 안전망이 가족지원의 공백을 충분히 대체하지 못하고 있음을 보여준다.
+        또한 공적 이전소득과 부채 사이에는 뚜렷한 상관이 없어, 공적지원이 부채 위험을 체계적으로 줄여 주는 구조라고 보기도 어렵다.
+        특히 가족지원도 없고 공적지원도 약하며 부채·이자 부담이 동반되는 청년은 단기적 생활비 문제를 장기적 금융 취약성으로 전환시킬 위험이 있다.
         """
     )
 
@@ -727,24 +933,52 @@ elif selected_page == pages[3]:
 elif selected_page == pages[4]:
     st.header("5. 누가 가장 위험한 쉬었음 청년인가?")
 
-    avg_risk = safe_mean(filtered["위험점수"])
+    # 위험군 비율은 위험점수로 정의되므로, 같은 변수를 거르는 '위험수준' 필터는 제외하고 계산한다
+    # (위험수준 필터를 적용하면 저위험=0% / 중·고위험=100%로 고정돼 의미가 사라짐).
+    gauge_base = filtered_excl_risk
+    risk_share = round((gauge_base["위험점수"] >= 2).mean() * 100, 1)
+    overall_share = round((df_survey["위험점수"] >= 2).mean() * 100, 1)
 
     fig = go.Figure(go.Indicator(
-        mode="gauge+number",
-        value=avg_risk,
-        title={"text": "평균 생활안전망 위험점수"},
+        mode="gauge+number+delta",
+        value=risk_share,
+        number={"suffix": "%", "valueformat": ".1f"},
+        delta={
+            "reference": overall_share,
+            "valueformat": ".1f",
+            "suffix": "%p",
+            "increasing": {"color": "#e03131"},
+            "decreasing": {"color": "#2f9e44"}
+        },
+        title={"text": "위험군 비율 (위험요인 2개 이상 중첩)<br><span style='font-size:0.8em;color:gray'>(검은 선 = 전체 비율, ▲/▼ = 전체 대비 %p)</span>"},
         gauge={
-            "axis": {"range": [0, 5]},
+            "axis": {"range": [0, 100], "ticksuffix": "%"},
             "steps": [
-                {"range": [0, 1.5], "color": "#d8f3dc"},
-                {"range": [1.5, 3], "color": "#fff3b0"},
-                {"range": [3, 5], "color": "#ffccd5"}
+                {"range": [0, 15], "color": "#d8f3dc"},
+                {"range": [15, 30], "color": "#fff3b0"},
+                {"range": [30, 100], "color": "#ffccd5"}
             ],
-            "bar": {"color": "#6c63ff"}
+            "bar": {"color": "#6c63ff"},
+            "threshold": {
+                "line": {"color": "#343a40", "width": 3},
+                "thickness": 0.85,
+                "value": overall_share
+            }
         }
     ))
     fig.update_layout(height=430)
     st.plotly_chart(fig, use_container_width=True)
+    st.caption(
+        f"보라색 막대는 현재 분석 대상 중 위험요인을 2개 이상(중·고위험) 가진 청년의 비율, "
+        f"검은 기준선은 전체 비율({overall_share:.1f}%)입니다. ▲/▼는 전체 대비 차이(%p)입니다. "
+        "평균 위험점수는 0점대가 많아 낮게 보이므로, 위험이 중첩된 집단의 규모로 심각성을 표시했습니다. "
+        "(색 구간 0–15·15–30·30%+는 시각적 참고용 임의 구분입니다.)"
+    )
+    if risk_level != "전체":
+        st.caption(
+            f"※ 게이지는 위험점수로 정의되는 지표라 '위험수준({risk_level})' 필터는 적용하지 않았습니다. "
+            "아래 분포·표·박스플롯에는 위험수준 필터가 반영됩니다."
+        )
 
     col1, col2 = st.columns(2)
 
@@ -773,8 +1007,9 @@ elif selected_page == pages[4]:
     risk_table = filtered.groupby("위험수준", observed=True).agg(
         인원수=("위험점수", "count"),
         평균생활비=(COL_COST, "mean"),
-        평균부채=(COL_DEBT, "mean"),
-        평균이자=(COL_INTEREST, "mean"),
+        부채보유율=(COL_DEBT, holding_rate),
+        부채중앙값_보유자=(COL_DEBT, holder_median),
+        이자보유율=(COL_INTEREST, holding_rate),
         가족지원비율=(COL_FAMILY, "mean"),
         공공지원비율=(COL_PUBLIC, "mean"),
         도움없음비율=(COL_NONE, "mean")
@@ -782,13 +1017,17 @@ elif selected_page == pages[4]:
 
     st.subheader("위험수준별 생활안전망 특성")
     st.dataframe(risk_table, use_container_width=True)
+    st.caption(
+        "※ 부채·이자는 0인 응답자가 대부분이라 평균 대신 '보유율'과 '보유자 한정 중앙값(만원)'으로 표시했습니다. "
+        "비율 컬럼은 0–1(=0–100%) 값입니다."
+    )
 
     insight_box(
         "핵심 인사이트",
         """
-        위험점수는 쉬었음 청년의 취약성을 하나의 변수로 단순화하기 위한 것이 아니라, 위험요인이 얼마나 중첩되어 있는지를 보여주기 위한 지표다.
-        부모 비동거, 가족지원 없음, 도움 받을 곳 없음, 부채 보유, 이자 부담은 각각 독립적으로도 위험하지만, 동시에 나타날 때 생활안전망의 붕괴 가능성이 커진다.
-        특히 고위험 집단은 단순히 소득이 낮은 집단이 아니라 생활비를 완충할 가족자원, 공적지원, 사회적 도움망이 동시에 약한 집단일 수 있다.
+        위험점수는 취약성을 하나의 값으로 단순화하려는 것이 아니라, 위험요인이 얼마나 중첩되는지를 보여주는 지표다.
+        부모 비동거, 가족지원 없음, 도움 받을 곳 없음, 부채 보유, 이자 부담의 다섯 요인을 합산하며(모두 충족 시 5점), 점수가 높을수록 여러 취약 요인이 동시에 작동함을 뜻한다.
+        분포를 보면 대다수는 저위험에 몰려 있고 고위험은 소수에 그치지만, 이 소수는 단지 소득이 낮은 집단이 아니라 생활비를 완충할 가족자원·공적지원·사회적 도움망이 동시에 약한 다중취약 집단이다.
         이 지점에서 쉬었음 청년 문제는 단순한 미취업 상태가 아니라 위험요소의 누적과 안전망 접근성의 격차 문제로 해석된다.
         """
     )
@@ -822,46 +1061,81 @@ elif selected_page == pages[5]:
     fig.update_layout(height=560)
     st.plotly_chart(fig, use_container_width=True)
 
-    fig = px.scatter(
-        filtered,
-        x=COL_COST,
-        y=COL_TOTAL_INCOME,
-        size=COL_DEBT,
-        color="생활안전망유형",
-        hover_data=[
-            COL_PRIVATE_INCOME,
-            COL_PUBLIC_INCOME,
-            COL_DEBT,
-            COL_LIVING_DEBT,
-            COL_INTEREST,
-            "위험점수"
-        ],
-        title="생활비·소득·부채로 본 생활안전망 유형"
-    )
-    fig.update_layout(height=620)
-    st.plotly_chart(fig, use_container_width=True)
-
     type_profile = filtered.groupby("생활안전망유형").agg(
         인원수=("생활안전망유형", "count"),
         평균생활비=(COL_COST, "mean"),
         평균연간소득=(COL_TOTAL_INCOME, "mean"),
-        평균사적이전소득=(COL_PRIVATE_INCOME, "mean"),
-        평균공적이전소득=(COL_PUBLIC_INCOME, "mean"),
-        평균부채=(COL_DEBT, "mean"),
-        평균이자=(COL_INTEREST, "mean"),
+        사적이전_보유율=(COL_PRIVATE_INCOME, holding_rate),
+        공적이전_보유율=(COL_PUBLIC_INCOME, holding_rate),
+        부채_보유율=(COL_DEBT, holding_rate),
+        이자_보유율=(COL_INTEREST, holding_rate),
         평균위험점수=("위험점수", "mean")
     ).reset_index()
 
+    st.subheader("유형별 자원·부채 보유율 비교")
+
+    rate_cols = {
+        "사적이전_보유율": "사적이전 보유율",
+        "공적이전_보유율": "공적이전 보유율",
+        "부채_보유율": "부채 보유율",
+        "이자_보유율": "이자 보유율"
+    }
+    rate_long = type_profile.melt(
+        id_vars="생활안전망유형",
+        value_vars=list(rate_cols.keys()),
+        var_name="지표",
+        value_name="보유율"
+    )
+    rate_long["지표"] = rate_long["지표"].map(rate_cols)
+
+    fig = px.bar(
+        rate_long,
+        x="생활안전망유형",
+        y="보유율",
+        color="지표",
+        barmode="group",
+        text=rate_long["보유율"].apply(lambda v: f"{v:.0%}"),
+        title="유형별 자원·부채 보유율 (1인 기준, %)"
+    )
+    fig.update_traces(textposition="outside")
+    fig.update_layout(height=520, yaxis_tickformat=".0%", legend_title_text="")
+    st.plotly_chart(fig, use_container_width=True)
+    st.caption(
+        "각 유형이 어떤 자원·부담에 노출돼 있는지 보유율로 비교합니다. "
+        "유형은 정의상 특정 변수(공공지원형=공적이전, 금융부담형=부채·이자, 고립위험형=도움망 없음)와 직접 연결되므로, "
+        "막대 높이로 유형별 성격이 드러납니다."
+    )
+
+    st.subheader("유형별 평균 위험점수")
+
+    type_risk = type_profile.sort_values("평균위험점수", ascending=False)
+    fig = px.bar(
+        type_risk,
+        x="생활안전망유형",
+        y="평균위험점수",
+        color="생활안전망유형",
+        text=type_risk["평균위험점수"].apply(lambda v: f"{v:.2f}"),
+        title="유형별 평균 생활안전망 위험점수 (0–5)"
+    )
+    fig.update_traces(textposition="outside")
+    fig.update_layout(height=420, showlegend=False, yaxis_range=[0, 5])
+    st.plotly_chart(fig, use_container_width=True)
+
     st.subheader("유형별 프로파일")
     st.dataframe(type_profile, use_container_width=True)
+    st.caption(
+        "※ 사적·공적 이전소득, 부채, 이자는 0인 응답자가 대부분이라 평균이 왜곡되기 쉬워 '보유율(0–1)'로 표시했습니다. "
+        "생활비·연간소득은 평균(만원)입니다."
+    )
 
     insight_box(
         "핵심 인사이트",
         """
         유형 분류는 쉬었음 청년을 하나의 취약 집단으로 묶어 설명하는 방식의 한계를 보완한다.
-        가족완충형은 가족지원과 부모동거를 통해 생활비 위험을 일정 부분 흡수하는 집단이며, 금융부담형은 부채나 이자 부담을 통해 현재의 생활비를 미래의 부담으로 이전하는 집단이다.
-        공공지원형은 공적 안전망과 연결되어 있다는 점에서 상대적으로 정책 접점이 존재하지만, 지원 규모가 충분한지는 별도 검토가 필요하다.
-        고립위험형은 도움 받을 곳이 없다는 점에서 가장 심각한 사각지대이며, 단순히 소득이나 부채 규모만으로는 포착되지 않는 사회적 취약성을 보여준다.
+        보유율 비교 막대를 보면 각 유형이 서로 다른 자원·부담 구조에 놓여 있음이 드러난다. 금융부담형은 부채·이자 보유율이 두드러지게 높고, 공공지원형은 공적이전 보유율이 높으며, 가족완충형은 가족지원·부모동거로 생활비 위험을 일정 부분 흡수한다.
+        고립위험형은 어느 자원에서도 보유율이 낮아 도움 받을 곳이 없다는 점에서 가장 심각한 사각지대다.
+        평균 위험점수 막대는 이 차이를 한 줄로 요약해, 어떤 유형이 위험요인을 더 많이 중첩해 안고 있는지 유형 간 서열을 보여준다.
+        결국 같은 '쉬었음' 상태라도 기대어 있는 안전망의 종류가 다르며, 이는 단순한 소득·부채 규모만으로는 포착되지 않는 차이다.
         """
     )
 
