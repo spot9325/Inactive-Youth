@@ -825,13 +825,16 @@ elif selected_page == pages[3]:
     else:
         st.metric("가족 도움 없음 집단", f"{len(no_family):,}명")
 
-        support_sum = pd.DataFrame({
+        none_rate = (no_family[COL_NONE] == 1).mean()
+        pub_rate = (no_family[COL_PUBLIC] == 1).mean()
+
+        support_cov = pd.DataFrame({
             "지원망": ["지인", "공공기관", "민간기관", "도움 받을 곳 없음"],
-            "인원수": [
-                safe_sum(no_family[COL_FRIEND]),
-                safe_sum(no_family[COL_PUBLIC]),
-                safe_sum(no_family[COL_PRIVATE]),
-                safe_sum(no_family[COL_NONE])
+            "도달률": [
+                (no_family[COL_FRIEND] == 1).mean(),
+                pub_rate,
+                (no_family[COL_PRIVATE] == 1).mean(),
+                none_rate
             ]
         })
 
@@ -839,15 +842,21 @@ elif selected_page == pages[3]:
 
         with col1:
             fig = px.bar(
-                support_sum,
+                support_cov,
                 x="지원망",
-                y="인원수",
-                text="인원수",
-                title="가족지원이 없는 청년의 대체 지원망"
+                y="도달률",
+                color="지원망",
+                text=support_cov["도달률"].apply(lambda v: f"{v:.1%}"),
+                title="가족지원이 없는 청년의 안전망 도달률 (coverage)"
             )
-            fig.update_traces(texttemplate="%{text:,.0f}", textposition="outside")
-            fig.update_layout(height=480)
+            fig.update_traces(textposition="outside")
+            fig.update_layout(height=480, yaxis_tickformat=".0%", showlegend=False)
             st.plotly_chart(fig, use_container_width=True)
+            st.caption(
+                f"※ 가족 도움이 없는 청년에서 '도움 받을 곳 없음'이 {none_rate:.0%}로 "
+                f"공공기관 도달률({pub_rate:.0%})을 크게 웃돕니다. 공공 안전망이 가족 공백을 "
+                "충분히 대체하지 못함을 보여줍니다(선택편향 없는 도달률 기준)."
+            )
 
         with col2:
             nf = no_family.copy()
@@ -871,7 +880,7 @@ elif selected_page == pages[3]:
                 y="부채 보유율",
                 color="공적지원",
                 text=rate_df["부채 보유율"].apply(lambda v: f"{v:.1%}"),
-                title="공적지원 보유 여부에 따른 부채 보유율"
+                title="(보조·탐색) 공적지원 보유 여부에 따른 부채 보유율"
             )
             fig.update_traces(textposition="outside")
             fig.update_layout(height=480, yaxis_tickformat=".0%", showlegend=False)
@@ -881,14 +890,15 @@ elif selected_page == pages[3]:
             if chi is not None:
                 verdict = "유의한 차이가 없습니다" if chi["p"] >= 0.05 else "통계적으로 유의한 차이가 있습니다"
                 st.caption(
-                    f"※ 두 집단의 부채 보유율 차이는 {diff*100:.1f}%p이고, {chi['method']} 결과 "
-                    f"p = {fmt_p(chi['p'])}로 {verdict}. "
-                    "즉 공적지원을 받는다고 해서 부채 위험이 낮아진다고 보기는 어렵습니다. "
-                    "(두 변수 모두 0이 대부분이라 밀도 히트맵 대신 보유율 2×2 비교로 관계 유무를 직접 확인했습니다.)"
+                    f"※ 보조·탐색 분석입니다. 두 집단의 부채 보유율 차이는 {diff*100:.1f}%p, {chi['method']} "
+                    f"p = {fmt_p(chi['p'])}로 {verdict}. 다만 공적지원은 형편이 어려운 대상에게 "
+                    "표적 지급되므로 수급↔부채에는 역방향 선택편향이 있어 **인과로 해석할 수 없습니다**. "
+                    "따라서 공공지원의 효과 근거로 쓰지 않으며, 공백에 대한 결론은 왼쪽 도달률(coverage)에 근거합니다."
                 )
             else:
                 st.caption(
-                    "※ 표본이 작아 공적지원 보유 여부와 부채 보유의 통계 검정은 생략했습니다."
+                    "※ 표본이 작아 공적지원 보유 여부와 부채 보유의 통계 검정은 생략했습니다. "
+                    "공백에 대한 결론은 왼쪽 도달률(coverage)에 근거합니다."
                 )
 
         st.subheader("가족지원 부재 집단의 생활비·소득·부채 분포")
@@ -910,9 +920,9 @@ elif selected_page == pages[3]:
         """
         가족지원이 없는 청년을 따로 보는 이유는 이들이 쉬었음 청년 내부에서 가장 중요한 정책적 분기점이 될 수 있기 때문이다.
         가족지원이 작동하지 않을 때 청년은 지인·공공기관·민간기관·금융자원, 또는 아무 도움도 없는 상태 중 하나로 이동한다.
-        위 비율 비교를 보면 이 집단에서는 ‘도움 받을 곳 없음’의 비중이 공적지원 보유 비중보다 크게 나타나, 공공 안전망이 가족지원의 공백을 충분히 대체하지 못하고 있음을 보여준다.
-        또한 공적 이전소득과 부채 사이에는 뚜렷한 상관이 없어, 공적지원이 부채 위험을 체계적으로 줄여 주는 구조라고 보기도 어렵다.
-        특히 가족지원도 없고 공적지원도 약하며 부채·이자 부담이 동반되는 청년은 단기적 생활비 문제를 장기적 금융 취약성으로 전환시킬 위험이 있다.
+        왼쪽 도달률(coverage)을 보면 이 집단에서는 ‘도움 받을 곳 없음’의 비율이 공공기관 도달률을 크게 웃돌아, 공공 안전망이 가족지원의 공백을 충분히 대체하지 못하고 있음을 보여준다. 이는 선택편향이 개입하지 않는 도달률 지표라 결론의 근거로 삼기에 적절하다.
+        반면 오른쪽 공적지원–부채 비교는 보조·탐색 자료일 뿐이다. 공적지원은 형편이 어려운 대상에게 표적 지급되므로 수급과 부채 사이에는 역방향 선택편향이 있어, 둘의 상관을 공적지원의 효과(또는 무효)로 해석할 수 없다.
+        특히 가족지원도 없고 공적 안전망과도 연결되지 못한 채 부채·이자 부담이 동반되는 청년은 단기적 생활비 문제를 장기적 금융 취약성으로 전환시킬 위험이 있다.
         """
     )
 
